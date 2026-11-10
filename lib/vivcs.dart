@@ -1,5 +1,7 @@
 export 'package:nvim/nvim.dart';
+export 'package:viff/viff.dart';
 export 'src/ui/commit_box.dart';
+export 'src/ui/context_menu.dart';
 export 'src/ui/repo_picker.dart';
 export 'src/ui/sidebar.dart';
 export 'src/ui/tree.dart';

@@ -68,5 +68,32 @@ void main() {
         const ChangedFile(path: 'trunk/src/added.dart', status: FileStatus.added),
       ]);
     });
+
+    test('fileContentAt reads BASE and parent revisions via svn cat', () async {
+      final calls = <List<String>>[];
+      final svn = Svn(
+        run: (exe, args, {required workingDirectory}) async {
+          calls.add(args);
+          return CommandResult(
+            exitCode: 0,
+            stdout: 'svn:${args.join(" ")}',
+            stderr: '',
+          );
+        },
+      );
+
+      expect(
+        await svn.fileContentAt('/repo', 'src/main.dart'),
+        'svn:cat -r BASE src/main.dart',
+      );
+      expect(
+        await svn.fileContentAt('/repo', 'src/main.dart', revision: 'r105~1'),
+        'svn:cat -r 104 src/main.dart',
+      );
+      expect(calls, [
+        ['cat', '-r', 'BASE', 'src/main.dart'],
+        ['cat', '-r', '104', 'src/main.dart'],
+      ]);
+    });
   });
 }

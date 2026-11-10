@@ -190,6 +190,49 @@ class Svn implements Vcs {
     }
   }
 
+  @override
+  Future<String?> fileContentAt(
+    String repoPath,
+    String filePath, {
+    String? revision,
+  }) async {
+    final cleanPath = filePath.replaceAll(r'\', '/');
+    String targetRev = 'BASE';
+    if (revision != null && revision.trim().isNotEmpty) {
+      var clean = revision.trim();
+      if (clean.startsWith('r')) {
+        clean = clean.substring(1);
+      }
+      if (clean.endsWith('~1')) {
+        final baseNum = int.tryParse(clean.substring(0, clean.length - 2));
+        if (baseNum != null && baseNum > 1) {
+          targetRev = '${baseNum - 1}';
+        } else {
+          return null;
+        }
+      } else {
+        targetRev = clean;
+      }
+    }
+
+    final res = await _run(
+      'svn',
+      ['cat', '-r', targetRev, cleanPath],
+      workingDirectory: repoPath,
+    );
+    return res.exitCode == 0 ? res.stdout : null;
+  }
+
+  @override
+  Future<void> applyHunkPatch(
+    String repoPath,
+    String unifiedPatch, {
+    bool cached = false,
+    bool reverse = false,
+  }) async {
+    throw UnsupportedError('SVN does not have a staging area');
+  }
+
   static String _unescapeXml(String input) {
     return input
         .replaceAll('&lt;', '<')

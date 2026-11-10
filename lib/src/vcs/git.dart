@@ -240,4 +240,76 @@ class Git implements Vcs {
       throw StateError(res.stderr.trim().isNotEmpty ? res.stderr.trim() : res.stdout.trim());
     }
   }
+
+  @override
+  Future<String?> fileContentAt(
+    String repoPath,
+    String filePath, {
+    String? revision,
+  }) async {
+    final cleanPath = filePath.replaceAll(r'\', '/');
+    if (revision == null || revision.isEmpty || revision == ':0') {
+      final indexRes = await _run(
+        'git',
+        ['show', ':$cleanPath'],
+        workingDirectory: repoPath,
+      );
+      if (indexRes.exitCode == 0) {
+        return indexRes.stdout;
+      }
+      final headRes = await _run(
+        'git',
+        ['show', 'HEAD:$cleanPath'],
+        workingDirectory: repoPath,
+      );
+      return headRes.exitCode == 0 ? headRes.stdout : null;
+    }
+
+    final revRes = await _run(
+      'git',
+      ['show', '$revision:$cleanPath'],
+      workingDirectory: repoPath,
+    );
+    return revRes.exitCode == 0 ? revRes.stdout : null;
+  }
+
+  @override
+  Future<void> applyHunkPatch(
+    String repoPath,
+    String unifiedPatch, {
+    bool cached = false,
+    bool reverse = false,
+  }) async {
+    final tempDir = await Directory.systemTemp.createTemp('vivcs_patch_');
+    final patchFile = File('${tempDir.path}/hunk.patch');
+    try {
+      await patchFile.writeAsString(
+        unifiedPatch.endsWith('\n') ? unifiedPatch : '$unifiedPatch\n',
+      );
+      final args = <String>[
+        'apply',
+        '--unidiff-zero',
+        if (cached) '--cached',
+        if (reverse) '--reverse',
+        patchFile.path,
+      ];
+      final res = await _run(
+        'git',
+        args,
+        workingDirectory: repoPath,
+      );
+      if (res.exitCode != 0) {
+        final msg = res.stderr.trim().isNotEmpty
+            ? res.stderr.trim()
+            : res.stdout.trim();
+        throw StateError('git apply failed: $msg');
+      }
+    } finally {
+      try {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      } catch (_) {}
+    }
+  }
 }

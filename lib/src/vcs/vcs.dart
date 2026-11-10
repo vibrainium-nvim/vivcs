@@ -126,6 +126,26 @@ abstract interface class Vcs {
   Future<void> stage(String repoPath, List<String> paths);
   Future<void> unstage(String repoPath, List<String> paths);
   Future<void> commit(String repoPath, String message);
+
+  /// Retrieves the content of [filePath] (relative to [repoPath]) at [revision].
+  /// When [revision] is null, returns the staged/index (or `BASE`) version.
+  /// Returns `null` if the file did not exist at [revision].
+  Future<String?> fileContentAt(
+    String repoPath,
+    String filePath, {
+    String? revision,
+  }) async =>
+      null;
+
+  /// Applies a unified diff patch to the repository (e.g. staging or unstaging a hunk).
+  Future<void> applyHunkPatch(
+    String repoPath,
+    String unifiedPatch, {
+    bool cached = false,
+    bool reverse = false,
+  }) async {
+    throw UnsupportedError('$name does not support hunk patch application');
+  }
 }
 
 const Set<String> _ignoredDirNames = {

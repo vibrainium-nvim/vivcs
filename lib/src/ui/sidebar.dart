@@ -1,25 +1,33 @@
 import 'dart:io';
 
-import 'package:nvim/nvim.dart';
+import 'package:viff/viff.dart';
 
 import '../vcs/vcs.dart';
 import 'commit_box.dart';
+import 'context_menu.dart';
 import 'repo_picker.dart';
 import 'tree.dart';
 
-class ViffSidebar {
+class VivcsSidebar {
   final Nvim nvim;
   final List<Vcs> vcsList;
   final int sidebarWidth;
   final Map<String, String> extraKeymaps;
+  late final ViffController viff;
 
   final SidebarTreeState treeState = SidebarTreeState();
   late final RepoPicker _repoPicker = RepoPicker(nvim);
   late final CommitBox _commitBox = CommitBox(nvim);
+  late final VcsContextMenu _contextMenu = VcsContextMenu(nvim);
 
   static const Set<String> _nonEditorFiletypes = {
     'viworkspace',
     'viff',
+    'viff-picker',
+    'viff-menu',
+    'vivcs',
+    'vivcs-picker',
+    'vivcs-menu',
     'viproblems',
     'viproblems-detail',
     'vibrainium-tabbar',
@@ -27,12 +35,19 @@ class ViffSidebar {
     'viworkspace-prompt',
     'viworkspace-confirm',
     'viworkspace-menu',
+    'visearch-padding',
+    'visearch-prompt',
+    'visearch-results',
+    'visearch-preview',
+    'visearch-dropdown',
   };
 
   int? _nsId;
   int? _buf;
   int? _win;
   int? _lastActiveEditorWin;
+  int? _lastSeenAlternateWin;
+  String? _lastActiveEditorBufPath;
   Set<int> _excludedWindows = const {};
   bool _highlightsInitialized = false;
 
@@ -41,14 +56,19 @@ class ViffSidebar {
   RepoStatus _status = const RepoStatus();
   List<Commit> _commits = const [];
   RenderedTree? _rendered;
+  DateTime? _lastClickTime;
+  int? _lastClickRow;
+  DateTime? _lastDoubleClickTime;
 
-  ViffSidebar({
+  VivcsSidebar({
     required this.nvim,
     required this.vcsList,
     this.sidebarWidth = 38,
     this.extraKeymaps = const {},
+    ViffController? viff,
     bool bindRpc = true,
   }) {
+    this.viff = viff ?? ViffController(nvim: nvim);
     if (bindRpc) {
       nvim.rpc.onRequest = _handleRpc;
       nvim.rpc.onNotification = (method, params) async {
@@ -69,8 +89,18 @@ class ViffSidebar {
     _win = win;
     _excludedWindows = excludedWins;
     if (lastActiveEditorWin != null && lastActiveEditorWin > 0) {
+      if (_lastActiveEditorWin != lastActiveEditorWin) {
+        _lastSeenAlternateWin = null;
+      }
       _lastActiveEditorWin = lastActiveEditorWin;
     }
+    viff.updateWindowContext(
+      excludedWins: {
+        if (_win != null) _win!,
+        ..._excludedWindows,
+      },
+      lastActiveEditorWin: _lastActiveEditorWin,
+    );
   }
 
   Repo? get activeRepo =>
@@ -81,8 +111,29 @@ class ViffSidebar {
   List<Repo> get repos => List.unmodifiable(_repos);
 
   RenderedTree? get renderedTree => _rendered;
+  RepoPicker get repoPicker => _repoPicker;
+  VcsContextMenu get contextMenu => _contextMenu;
 
-  Future<Object?> handleAction(String action) async {
+  Future<Object?> handleAction(
+    String rawAction, [
+    List<Object?> params = const [],
+  ]) async {
+    final action = rawAction.startsWith('vcs.')
+        ? rawAction.substring('vcs.'.length)
+        : rawAction;
+
+    if (action.startsWith('menu_select:')) {
+      final idx = int.tryParse(action.substring('menu_select:'.length));
+      if (idx != null) {
+        await _contextMenu.selectIndex(idx);
+      }
+      return true;
+    }
+
+    if (rawAction.startsWith('viff.') || rawAction.startsWith('diff.')) {
+      return viff.handleAction(rawAction);
+    }
+
     switch (action) {
       case 'open':
         await open();
@@ -105,6 +156,40 @@ class ViffSidebar {
       case 'enter':
         await handleEnter();
         return true;
+      case 'diff_inline':
+        await handleOpenDiff(mode: DiffViewMode.inline);
+        return true;
+      case 'diff_sbs':
+        await handleOpenDiff(mode: DiffViewMode.sideBySide);
+        return true;
+      case 'open_plain':
+        await handleOpenPlainFile();
+        return true;
+      case 'copy_review':
+        await viff.copyAllReviews();
+        return true;
+      case 'click':
+        await handleClick(doubleClick: false);
+        return true;
+      case 'double_click':
+        await handleClick(doubleClick: true);
+        return true;
+      case 'context_menu':
+        await _rememberActiveEditorWin();
+        final clickedPos = NvimMouseRouter.parseActionParams(params);
+        await openContextMenu(mousePos: clickedPos);
+        return true;
+      case 'menu_click':
+        await _contextMenu.handleClick();
+        return true;
+      case 'menu_confirm':
+        await _contextMenu.confirm();
+        return true;
+      case 'menu_close':
+        final expectedBuf =
+            params.length > 1 ? int.tryParse(params[1]?.toString() ?? '') : null;
+        await _contextMenu.cancel(expectedBufId: expectedBuf);
+        return true;
       case 'stage':
         await handleStage(stage: true);
         return true;
@@ -126,6 +211,9 @@ class ViffSidebar {
       case 'prev_repo':
         await cycleRepo(-1);
         return true;
+      case 'picker_click':
+        await _repoPicker.handleClick();
+        return true;
       case 'picker_confirm':
         await _repoPicker.confirm();
         return true;
@@ -144,11 +232,11 @@ class ViffSidebar {
   }
 
   Future<Object?> _handleRpc(String method, List<Object?> params) async {
-    final action = (method == 'vibrainium_action' || method == 'viff_action') &&
+    final action = (method == 'vibrainium_action' || method == 'vivcs_action') &&
             params.isNotEmpty
         ? params.first.toString()
         : method;
-    return handleAction(action);
+    return handleAction(action, params);
   }
 
   Future<bool> isOpen() async {
@@ -177,6 +265,8 @@ class ViffSidebar {
   Future<void> closeModals() async {
     await _repoPicker.close();
     await _commitBox.close();
+    await _contextMenu.close();
+    await viff.closeModals();
   }
 
   Future<void> close() async {
@@ -193,12 +283,16 @@ class ViffSidebar {
     if (ok) {
       await onHotReloaded();
     } else {
-      await nvim.notify('[viff] Hot reload unavailable (running AOT or non-JIT)', level: 3);
+      await nvim.notify(
+        '[Vibrainium] Hot reload unavailable (running AOT or non-JIT)',
+        level: 3,
+      );
     }
   }
 
   Future<void> onHotReloaded() async {
     _highlightsInitialized = false;
+    nvim.resetRightMouseRouterForHotReload();
     final buf = _buf;
     if (buf != null && await nvim.bufIsValid(buf)) {
       await _bindSidebarKeys(buf);
@@ -207,7 +301,8 @@ class ViffSidebar {
       await _ensureHighlights();
       await refresh(rescanRepos: false);
     }
-    await nvim.notify('[viff] Hot reloaded');
+    await viff.onHotReloaded();
+    await nvim.notify('[Vibrainium] Hot reloaded');
   }
 
   Future<void> refresh({bool rescanRepos = false}) async {
@@ -265,6 +360,16 @@ class ViffSidebar {
   }
 
   Future<void> openRepoPicker() async {
+    await _rememberActiveEditorWin();
+    if (_repoPicker.isOpen) {
+      await _repoPicker.close();
+      final win = _win;
+      if (win != null && await nvim.winIsValid(win)) {
+        await nvim.setCurrentWin(win);
+      }
+      return;
+    }
+    await _contextMenu.close();
     await _repoPicker.open(
       repos: _repos,
       activeIndex: _activeRepoIndex,
@@ -273,6 +378,7 @@ class ViffSidebar {
   }
 
   Future<void> openCommitBox() async {
+    await _rememberActiveEditorWin();
     final repo = activeRepo;
     if (repo == null) return;
     await _commitBox.open(
@@ -301,6 +407,267 @@ class ViffSidebar {
     return rendered.nodes[idx];
   }
 
+  Future<(int, int)?> _syncCursorFromMouse(
+    int win, {
+    MousePosition? mousePos,
+  }) async {
+    await _rememberActiveEditorWin();
+    final resolvedMouse = mousePos ?? await nvim.getMousePos();
+    final maxLine = (_rendered?.nodes.length ?? 1).clamp(1, 999999);
+    if (resolvedMouse != null) {
+      if (resolvedMouse.winId == win &&
+          (resolvedMouse.line >= 1 || resolvedMouse.winRow >= 1)) {
+        final targetLine = resolvedMouse.line >= 1
+            ? resolvedMouse.line.clamp(1, maxLine)
+            : maxLine;
+        final currentWin = await nvim.getCurrentWin();
+        if (currentWin != win) {
+          await nvim.setCurrentWin(win);
+        }
+        await nvim.winSetCursor(win, targetLine, 0);
+        final winRow =
+            resolvedMouse.winRow > 0 ? resolvedMouse.winRow : targetLine;
+        return (targetLine, winRow);
+      }
+      if (resolvedMouse.winId > 0 &&
+          resolvedMouse.winId != win &&
+          await nvim.winIsValid(resolvedMouse.winId)) {
+        return null;
+      }
+      if (resolvedMouse.screenRow > 0) {
+        final (winTop0, _) = await nvim.winGetPosition(win);
+        final topLine = await nvim.winGetTopLine(win);
+        final winRow = (resolvedMouse.screenRow - winTop0).clamp(1, 999);
+        final targetLine = (topLine + winRow - 1).clamp(1, maxLine);
+        final currentWin = await nvim.getCurrentWin();
+        if (currentWin != win) {
+          await nvim.setCurrentWin(win);
+        }
+        await nvim.winSetCursor(win, targetLine, 0);
+        return (targetLine, winRow);
+      }
+    }
+    final (row1, _) = await nvim.winGetCursor(win);
+    return (row1, row1);
+  }
+
+  Future<void> handleClick({required bool doubleClick}) async {
+    await _rememberActiveEditorWin();
+    await _contextMenu.close();
+    final win = _win;
+    if (win == null || !await nvim.winIsValid(win)) return;
+
+    final synced = await _syncCursorFromMouse(win);
+    if (synced == null) return;
+    final (row1, _) = synced;
+    final node = await _nodeUnderCursor();
+    final now = DateTime.now();
+
+    if (!doubleClick) {
+      if (node is RepoHeaderNode) {
+        _lastClickTime = null;
+        _lastClickRow = null;
+        await openRepoPicker();
+        return;
+      }
+
+      if (_lastClickRow == row1 &&
+          _lastClickTime != null &&
+          now.difference(_lastClickTime!) <=
+              const Duration(milliseconds: 400)) {
+        _lastClickTime = null;
+        _lastClickRow = null;
+        _lastDoubleClickTime = now;
+        await handleEnter();
+        return;
+      }
+
+      _lastClickRow = row1;
+      _lastClickTime = now;
+      return;
+    }
+
+    _lastClickTime = null;
+    _lastClickRow = null;
+    if (_lastDoubleClickTime != null &&
+        now.difference(_lastDoubleClickTime!) <=
+            const Duration(milliseconds: 250)) {
+      return;
+    }
+    _lastDoubleClickTime = now;
+    await handleEnter();
+  }
+
+  Future<void> _focusSidebar() async {
+    final win = _win;
+    if (win != null && await nvim.winIsValid(win)) {
+      await nvim.setCurrentWin(win);
+    }
+  }
+
+  Future<void> openContextMenu({MousePosition? mousePos}) async {
+    final win = _win;
+    if (win == null || !await nvim.winIsValid(win)) return;
+    await _contextMenu.close();
+    final synced = await _syncCursorFromMouse(win, mousePos: mousePos);
+    if (synced == null) return;
+    final (_, winRow) = synced;
+    final node = await _nodeUnderCursor();
+    final repo = activeRepo;
+    final hasStaging = repo?.vcs.hasStagingArea ?? false;
+
+    final items = <VcsContextMenuItem>[
+      if (node is FileNode || node is CommitFileNode) ...[
+        VcsContextMenuItem(
+          label: 'Open Diff',
+          shortcut: '<CR>',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleEnter();
+          },
+        ),
+        VcsContextMenuItem(
+          label: 'Open Side-by-Side Diff',
+          shortcut: 'D',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleOpenDiff(mode: DiffViewMode.sideBySide);
+          },
+        ),
+        VcsContextMenuItem(
+          label: 'Open File',
+          shortcut: 'o',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleOpenPlainFile();
+          },
+        ),
+      ],
+      if (node is FileNode && hasStaging && node.section == SectionKind.unstaged)
+        VcsContextMenuItem(
+          label: 'Stage File',
+          shortcut: 's',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStage(stage: true);
+          },
+        ),
+      if (node is FileNode && hasStaging && node.section == SectionKind.staged)
+        VcsContextMenuItem(
+          label: 'Unstage File',
+          shortcut: 'u',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStage(stage: false);
+          },
+        ),
+      if (node is DirNode && hasStaging && node.section == SectionKind.unstaged)
+        VcsContextMenuItem(
+          label: 'Stage Directory',
+          shortcut: 's',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStage(stage: true);
+          },
+        ),
+      if (node is DirNode && hasStaging && node.section == SectionKind.staged)
+        VcsContextMenuItem(
+          label: 'Unstage Directory',
+          shortcut: 'u',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStage(stage: false);
+          },
+        ),
+      if (node is SectionNode || node is DirNode || node is CommitNode)
+        VcsContextMenuItem(
+          label: switch (node) {
+            SectionNode(:final expanded) ||
+            DirNode(:final expanded) ||
+            CommitNode(:final expanded) =>
+              expanded ? 'Collapse' : 'Expand',
+            _ => 'Toggle',
+          },
+          shortcut: '<CR>',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleEnter();
+          },
+        ),
+      if (hasStaging) ...[
+        VcsContextMenuItem(
+          label: 'Stage All',
+          shortcut: 'S',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStageAll(stage: true);
+          },
+        ),
+        VcsContextMenuItem(
+          label: 'Unstage All',
+          shortcut: 'U',
+          onSelect: () async {
+            await _focusSidebar();
+            await handleStageAll(stage: false);
+          },
+        ),
+      ],
+      if (repo != null)
+        VcsContextMenuItem(
+          label: 'Commit...',
+          shortcut: 'c',
+          onSelect: () async {
+            await _focusSidebar();
+            await openCommitBox();
+          },
+        ),
+      if (_repos.isNotEmpty)
+        VcsContextMenuItem(
+          label: 'Select Repository...',
+          shortcut: 'r',
+          onSelect: () async {
+            await _focusSidebar();
+            await openRepoPicker();
+          },
+        ),
+      VcsContextMenuItem(
+        label: 'Copy Review Comments',
+        shortcut: 'gY',
+        onSelect: () async {
+          await _focusSidebar();
+          await viff.copyAllReviews();
+        },
+      ),
+      VcsContextMenuItem(
+        label: 'Refresh',
+        shortcut: 'R',
+        onSelect: () async {
+          await _focusSidebar();
+          await refresh(rescanRepos: true);
+        },
+      ),
+    ];
+
+    final title = switch (node) {
+      FileNode(:final name) => name,
+      CommitFileNode(:final file) => file.path,
+      DirNode(:final name) => name,
+      SectionNode(:final kind) => kind.label,
+      CommitNode(:final commit) => commit.shortId,
+      RepoHeaderNode(:final repo) => repo?.name ?? 'Repository',
+      _ => repo?.name ?? 'VCS',
+    };
+
+    await _contextMenu.open(
+      items: items,
+      title: title,
+      anchorWin: win,
+      row: winRow,
+      col: 2,
+      onCancel: _focusSidebar,
+    );
+  }
+
   Future<void> handleEnter() async {
     final node = await _nodeUnderCursor();
     final repo = activeRepo;
@@ -322,16 +689,208 @@ class ViffSidebar {
               await repo.vcs.commitFiles(repo.path, commit.id);
         }
         await render();
-      case FileNode(:final file):
-        if (repo != null) {
-          await _openFileInMainWindow('${repo.path}/${file.path}');
-        }
-      case CommitFileNode(:final file):
-        if (repo != null) {
-          await _openFileInMainWindow('${repo.path}/${file.path}');
-        }
+      case FileNode():
+      case CommitFileNode():
+        await _openDiffForNode(node);
       case DividerNode() || EmptyHintNode():
         break;
+    }
+  }
+
+  Future<void> handleOpenDiff({DiffViewMode? mode}) async {
+    final node = await _nodeUnderCursor();
+    if (node == null) return;
+    await _openDiffForNode(node, mode: mode);
+  }
+
+  Future<void> handleOpenPlainFile() async {
+    final node = await _nodeUnderCursor();
+    final repo = activeRepo;
+    if (node == null || repo == null) return;
+    switch (node) {
+      case FileNode(:final file):
+        await _openFileInMainWindow('${repo.path}/${file.path}');
+      case CommitFileNode(:final file):
+        await _openFileInMainWindow('${repo.path}/${file.path}');
+      default:
+        break;
+    }
+  }
+
+  Future<void> _openDiffForNode(
+    TreeNode node, {
+    DiffViewMode? mode,
+  }) async {
+    final repo = activeRepo;
+    if (repo == null) return;
+    await _rememberActiveEditorWin();
+    viff.updateWindowContext(
+      excludedWins: {
+        if (_win != null) _win!,
+        ..._excludedWindows,
+      },
+      lastActiveEditorWin: _lastActiveEditorWin,
+    );
+
+    if (node is FileNode) {
+      final file = node.file;
+      if (node.section == SectionKind.staged) {
+        final target = VcsStagedDiffTarget(
+          repoName: repo.name,
+          repoPath: repo.path,
+          vcsName: repo.vcs.name,
+          headLabel: repo.head,
+          filePath: file.path,
+          oldPath: file.oldPath,
+          onUnstageHunk: (hunk) async {
+            if (file.status == FileStatus.added ||
+                file.status == FileStatus.deleted) {
+              await repo.vcs.unstage(repo.path, [file.path]);
+              return;
+            }
+            try {
+              final patch = hunk.toUnifiedPatch(
+                oldPath: file.oldPath ?? file.path,
+                newPath: file.path,
+              );
+              await repo.vcs.applyHunkPatch(
+                repo.path,
+                patch,
+                cached: true,
+                reverse: true,
+              );
+            } catch (_) {
+              await repo.vcs.unstage(repo.path, [file.path]);
+            }
+          },
+          onRefreshVcs: () => refresh(rescanRepos: false),
+        );
+
+        await viff.openDiff(
+          target: target,
+          mode: mode,
+          loadOldLines: () async {
+            if (file.status == FileStatus.added) return const [];
+            final raw = await repo.vcs.fileContentAt(
+              repo.path,
+              file.oldPath ?? file.path,
+              revision: 'HEAD',
+            );
+            return DiffEngine.splitLines(raw);
+          },
+          loadNewLines: () async {
+            if (file.status == FileStatus.deleted) return const [];
+            final raw = await repo.vcs.fileContentAt(
+              repo.path,
+              file.path,
+              revision: ':0',
+            );
+            return DiffEngine.splitLines(raw);
+          },
+        );
+      } else {
+        final target = VcsUnstagedDiffTarget(
+          repoName: repo.name,
+          repoPath: repo.path,
+          vcsName: repo.vcs.name,
+          headLabel: repo.head,
+          filePath: file.path,
+          oldPath: file.oldPath,
+          hasStagingArea: repo.vcs.hasStagingArea,
+          onStageHunk: (hunk) async {
+            if (file.status == FileStatus.untracked ||
+                file.status == FileStatus.added ||
+                file.status == FileStatus.deleted) {
+              await repo.vcs.stage(repo.path, [file.path]);
+              return;
+            }
+            try {
+              final patch = hunk.toUnifiedPatch(
+                oldPath: file.oldPath ?? file.path,
+                newPath: file.path,
+              );
+              await repo.vcs.applyHunkPatch(
+                repo.path,
+                patch,
+                cached: true,
+              );
+            } catch (_) {
+              await repo.vcs.stage(repo.path, [file.path]);
+            }
+          },
+          onRefreshVcs: () => refresh(rescanRepos: false),
+        );
+
+        await viff.openDiff(
+          target: target,
+          mode: mode,
+          loadOldLines: () async {
+            if (file.status == FileStatus.untracked ||
+                file.status == FileStatus.added) {
+              return const [];
+            }
+            final raw = await repo.vcs.fileContentAt(
+              repo.path,
+              file.oldPath ?? file.path,
+            );
+            return DiffEngine.splitLines(raw);
+          },
+          loadNewLines: () async {
+            if (file.status == FileStatus.deleted) return const [];
+            final diskFile = File('${repo.path}/${file.path}');
+            if (await diskFile.exists()) {
+              return DiffEngine.splitLines(await diskFile.readAsString());
+            }
+            return const [];
+          },
+        );
+      }
+      if (viff.rightWindowId != null) {
+        _lastActiveEditorWin = viff.rightWindowId;
+      }
+    } else if (node is CommitFileNode) {
+      final file = node.file;
+      final commit = node.commit;
+
+      final target = VcsCommitDiffTarget(
+        repoName: repo.name,
+        repoPath: repo.path,
+        vcsName: repo.vcs.name,
+        commitId: commit.id,
+        commitShortId: commit.shortId,
+        commitAuthor: commit.author,
+        commitDate: commit.date,
+        commitMessage: commit.message,
+        parentRevision: '${commit.shortId}~1',
+        filePath: file.path,
+        oldPath: file.oldPath,
+      );
+
+      await viff.openDiff(
+        target: target,
+        mode: mode,
+        loadOldLines: () async {
+          if (file.status == FileStatus.added) return const [];
+          final raw = await repo.vcs.fileContentAt(
+            repo.path,
+            file.oldPath ?? file.path,
+            revision: '${commit.id}~1',
+          );
+          return DiffEngine.splitLines(raw);
+        },
+        loadNewLines: () async {
+          if (file.status == FileStatus.deleted) return const [];
+          final raw = await repo.vcs.fileContentAt(
+            repo.path,
+            file.path,
+            revision: commit.id,
+          );
+          return DiffEngine.splitLines(raw);
+        },
+      );
+      if (viff.rightWindowId != null) {
+        _lastActiveEditorWin = viff.rightWindowId;
+      }
     }
   }
 
@@ -408,15 +967,55 @@ class ViffSidebar {
     return true;
   }
 
+  Future<bool> _isReplaceableMainWin(int? w) async {
+    if (w == null || w <= 0) return false;
+    if (w == _win || _excludedWindows.contains(w)) return false;
+    if (!await nvim.winIsValid(w)) return false;
+
+    final config = await nvim.winGetConfig(w);
+    final relative = config['relative']?.toString() ?? '';
+    if (relative.isNotEmpty) return false;
+
+    final buf = await nvim.winGetBuf(w);
+    if (buf > 0) {
+      final filetype =
+          (await nvim.bufGetOption(buf, 'filetype'))?.toString() ?? '';
+      if (_nonEditorFiletypes.contains(filetype)) return false;
+      final buftype =
+          (await nvim.bufGetOption(buf, 'buftype'))?.toString() ?? '';
+      if (buftype == 'terminal' ||
+          buftype == 'quickfix' ||
+          buftype == 'prompt') {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Future<void> _rememberActiveEditorWin() async {
     final current = await nvim.getCurrentWin();
+    final alt = await nvim.getAlternateWin();
     if (await _isEligibleEditorWin(current)) {
       _lastActiveEditorWin = current;
-      return;
+      _lastSeenAlternateWin = alt;
+    } else if (await _isEligibleEditorWin(alt)) {
+      if (_lastActiveEditorWin == null ||
+          !await _isEligibleEditorWin(_lastActiveEditorWin) ||
+          (_lastSeenAlternateWin != null && alt != _lastSeenAlternateWin)) {
+        _lastActiveEditorWin = alt;
+      }
+      _lastSeenAlternateWin = alt;
     }
-    final alt = await nvim.getAlternateWin();
-    if (await _isEligibleEditorWin(alt)) {
-      _lastActiveEditorWin = alt;
+
+    final editorWin = _lastActiveEditorWin;
+    if (editorWin != null && await nvim.winIsValid(editorWin)) {
+      final buf = await nvim.winGetBuf(editorWin);
+      if (buf > 0 && await nvim.bufIsValid(buf)) {
+        final name = (await nvim.bufGetName(buf)).trim();
+        if (name.isNotEmpty) {
+          _lastActiveEditorBufPath = name;
+        }
+      }
     }
   }
 
@@ -425,8 +1024,8 @@ class ViffSidebar {
 
     int? targetWin;
     final candidates = <int?>[
-      await nvim.getAlternateWin(),
       _lastActiveEditorWin,
+      await nvim.getAlternateWin(),
       await nvim.getCurrentWin(),
     ];
     for (final candidate in candidates) {
@@ -436,10 +1035,47 @@ class ViffSidebar {
       }
     }
 
+    List<int>? allWins;
     if (targetWin == null) {
-      final wins = await nvim.listWins();
-      for (final w in wins) {
-        if (await _isEligibleEditorWin(w)) {
+      allWins = await nvim.listWins();
+      final activePath = _lastActiveEditorBufPath;
+      if (activePath != null && activePath.isNotEmpty) {
+        for (final w in allWins) {
+          if (await _isEligibleEditorWin(w)) {
+            final b = await nvim.winGetBuf(w);
+            if (b > 0) {
+              final name = (await nvim.bufGetName(b)).trim();
+              if (name.isNotEmpty && name == activePath) {
+                targetWin = w;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (targetWin == null) {
+        for (final w in allWins) {
+          if (await _isEligibleEditorWin(w)) {
+            targetWin = w;
+            break;
+          }
+        }
+      }
+    }
+
+    if (targetWin == null) {
+      for (final candidate in candidates) {
+        if (await _isReplaceableMainWin(candidate)) {
+          targetWin = candidate;
+          break;
+        }
+      }
+    }
+
+    if (targetWin == null) {
+      allWins ??= await nvim.listWins();
+      for (final w in allWins) {
+        if (await _isReplaceableMainWin(w)) {
           targetWin = w;
           break;
         }
@@ -492,28 +1128,47 @@ class ViffSidebar {
   }
 
   Future<void> _ensureHighlights() async {
-    _nsId ??= await nvim.createNamespace('viff_sidebar');
+    _nsId ??= await nvim.createNamespace('vivcs_sidebar');
     if (_highlightsInitialized) return;
     _highlightsInitialized = true;
 
     const groups = <String, Map<String, Object?>>{
-      'ViffRepoHeader': {'bold': true, 'link': 'Title'},
-      'ViffDivider': {'link': 'WinSeparator'},
-      'ViffSectionHeader': {'bold': true, 'link': 'Statement'},
-      'ViffDirectory': {'bold': true, 'link': 'Directory'},
-      'ViffStatusModified': {'bold': true, 'link': 'Changed'},
-      'ViffStatusAdded': {'bold': true, 'link': 'Added'},
-      'ViffStatusDeleted': {'bold': true, 'link': 'Removed'},
-      'ViffStatusRenamed': {'bold': true, 'link': 'Special'},
-      'ViffStatusUntracked': {'bold': true, 'link': 'Question'},
-      'ViffStatusConflicted': {'bold': true, 'link': 'ErrorMsg'},
-      'ViffCommitHash': {'bold': true, 'link': 'Identifier'},
-      'ViffMuted': {'link': 'Comment'},
+      'VivcsRepoHeader': {'bold': true, 'link': 'Title'},
+      'VivcsDivider': {'link': 'WinSeparator'},
+      'VivcsSectionHeader': {'bold': true, 'link': 'Title'},
+      'VivcsDirectory': {'bold': true, 'link': 'Directory'},
+      'VivcsStatusModified': {'bold': true, 'link': 'Changed'},
+      'VivcsStatusAdded': {'bold': true, 'link': 'Added'},
+      'VivcsStatusDeleted': {'bold': true, 'link': 'Removed'},
+      'VivcsStatusRenamed': {'bold': true, 'link': 'Special'},
+      'VivcsStatusUntracked': {'bold': true, 'link': 'Question'},
+      'VivcsStatusConflicted': {'bold': true, 'link': 'ErrorMsg'},
+      'VivcsCommitHash': {'bold': true, 'link': 'Identifier'},
+      'VivcsMuted': {'link': 'Comment'},
     };
 
     for (final entry in groups.entries) {
       await nvim.setHl(0, entry.key, entry.value);
     }
+
+    try {
+      await nvim.execLua(r'''
+local function set_bold_from(group, target)
+  local ok, base = pcall(vim.api.nvim_get_hl, 0, { name = target, link = false })
+  local spec = { bold = true, cterm = { bold = true } }
+  if ok and type(base) == 'table' then
+    spec.fg = base.fg
+    spec.bg = base.bg
+    spec.sp = base.sp
+    spec.ctermfg = base.ctermfg
+    spec.ctermbg = base.ctermbg
+  end
+  pcall(vim.api.nvim_set_hl, 0, group, spec)
+end
+set_bold_from('VivcsRepoHeader', 'Title')
+set_bold_from('VivcsSectionHeader', 'Title')
+''');
+    } catch (_) {}
   }
 
   Future<int> ensureBuffer() async {
@@ -525,7 +1180,7 @@ class ViffSidebar {
       await nvim.bufSetOption(buf, 'buftype', 'nofile');
       await nvim.bufSetOption(buf, 'bufhidden', 'hide');
       await nvim.bufSetOption(buf, 'swapfile', false);
-      await nvim.bufSetOption(buf, 'filetype', 'viff');
+      await nvim.bufSetOption(buf, 'filetype', 'vivcs');
       await _bindSidebarKeys(buf);
     }
     return buf;
@@ -535,6 +1190,7 @@ class ViffSidebar {
     final buf = await ensureBuffer();
 
     final win = await nvim.openWin(buf, true, {
+      'win': -1,
       'split': 'left',
       'width': sidebarWidth,
       'style': 'minimal',
@@ -554,8 +1210,10 @@ class ViffSidebar {
   Future<void> _bindSidebarKeys(int buf) async {
     final mappings = <String, String>{
       '<CR>': 'enter',
-      'o': 'enter',
-      '<Space>': 'stage',
+      'o': 'open_plain',
+      'd': 'diff_inline',
+      'D': 'diff_sbs',
+      'gY': 'copy_review',
       's': 'stage',
       'u': 'unstage',
       'S': 'stage_all',
@@ -578,5 +1236,21 @@ class ViffSidebar {
         "<Cmd>lua require('vibrainium').action('${entry.value}')<CR>",
       );
     }
+
+    const mouseMappings = <String, String>{
+      '<LeftMouse>': 'vcs.click',
+      '<2-LeftMouse>': 'vcs.double_click',
+    };
+
+    for (final entry in mouseMappings.entries) {
+      await nvim.bufSetKeymap(
+        buf,
+        'n',
+        entry.key,
+        "<LeftMouse><Cmd>lua require('vibrainium').action('${entry.value}')<CR>",
+      );
+    }
+
+    await nvim.registerRightClickBuffer(buf, 'vcs.context_menu');
   }
 }

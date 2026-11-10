@@ -34,14 +34,15 @@ void main() {
         ],
       );
 
-      expect(rendered.lines[0], contains('my_git_repo (git • main) ▾'));
-      expect(rendered.lines, contains('▾ Unstaged (1)'));
-      expect(rendered.lines, contains('▾ Staged (1)'));
-      expect(rendered.lines, contains('▾ Commits (1)'));
-      expect(rendered.lines.any((l) => l.contains('lib/')), isTrue);
-      expect(rendered.lines.any((l) => l.contains('src/')), isTrue);
-      expect(rendered.lines.any((l) => l.contains('M app.dart')), isTrue);
-      expect(rendered.lines.any((l) => l.contains('M pubspec.yaml')), isTrue);
+      expect(rendered.lines[0], ' [my_git_repo (git • main) ]');
+      expect(rendered.lines, contains(' Unstaged (1)'));
+      expect(rendered.lines, contains(' Staged (1)'));
+      expect(rendered.lines, contains(' Commits (1)'));
+      expect(rendered.lines, contains(' lib/'));
+      expect(rendered.lines, contains('   src/'));
+      expect(rendered.lines, contains('      M app.dart'));
+      expect(rendered.lines, contains('  M pubspec.yaml'));
+      expect(rendered.lines, contains(' abc1234 Init project (Teja, 2h ago)'));
     });
 
     test('omits Staged section for VCS without staging area (e.g. SVN)', () {
@@ -64,10 +65,11 @@ void main() {
         commits: const [],
       );
 
-      expect(rendered.lines[0], contains('my_svn_repo (svn • r42) ▾'));
-      expect(rendered.lines, contains('▾ Unstaged (1)'));
+      expect(rendered.lines[0], ' [my_svn_repo (svn • r42) ]');
+      expect(rendered.lines, contains(' Unstaged (1)'));
       expect(rendered.lines.any((l) => l.contains('Staged')), isFalse);
-      expect(rendered.lines, contains('▾ Commits (0)'));
+      expect(rendered.lines, contains(' Commits (0)'));
+      expect(rendered.lines, contains('(no commits)'));
     });
 
     test('supports collapsing directories and expanding commits', () {
@@ -104,9 +106,10 @@ void main() {
         ],
       );
 
-      expect(rendered.lines.any((l) => l.contains('▸ lib/')), isTrue);
+      expect(rendered.lines, contains(' lib/'));
       expect(rendered.lines.any((l) => l.contains('hidden.dart')), isFalse);
-      expect(rendered.lines.any((l) => l.contains('A README.md')), isTrue);
+      expect(rendered.lines, contains(' c1 Add readme (Teja, now)'));
+      expect(rendered.lines, contains('    A README.md'));
     });
   });
 }

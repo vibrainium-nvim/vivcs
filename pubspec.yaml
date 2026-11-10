@@ -9,6 +9,8 @@ environment:
 dependencies:
   nvim:
     path: ../nvim
+  viff:
+    path: ../viff
 
 dev_dependencies:
   lints: ^5.0.0

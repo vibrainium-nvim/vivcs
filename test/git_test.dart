@@ -42,10 +42,10 @@ void main() {
       expect(commits[1].shortId, '1234567');
 
       const diffTreeOutput =
-          'M\x00lib/viff.dart\x00A\x00lib/new.dart\x00R100\x00lib/old.dart\x00lib/moved.dart\x00';
+          'M\x00lib/vivcs.dart\x00A\x00lib/new.dart\x00R100\x00lib/old.dart\x00lib/moved.dart\x00';
       final files = Git.parseDiffTree(diffTreeOutput);
       expect(files, [
-        const ChangedFile(path: 'lib/viff.dart', status: FileStatus.modified),
+        const ChangedFile(path: 'lib/vivcs.dart', status: FileStatus.modified),
         const ChangedFile(path: 'lib/new.dart', status: FileStatus.added),
         const ChangedFile(
           path: 'lib/moved.dart',
@@ -77,6 +77,51 @@ void main() {
       expect(executed[2].$2, ['reset', 'HEAD', '--', 'a.dart']);
       expect(executed[3].$1, 'git');
       expect(executed[3].$2, ['commit', '-m', 'feat: add sidebar']);
+    });
+
+    test('fileContentAt reads index/HEAD and specific revisions, applyHunkPatch runs git apply', () async {
+      final calls = <List<String>>[];
+      final git = Git(
+        run: (exe, args, {required workingDirectory}) async {
+          calls.add(args);
+          if (args.length >= 2 && args[0] == 'show') {
+            return CommandResult(
+              exitCode: 0,
+              stdout: 'content for ${args[1]}',
+              stderr: '',
+            );
+          }
+          return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+        },
+      );
+
+      final indexContent = await git.fileContentAt('/repo', 'lib/a.dart');
+      expect(indexContent, 'content for :lib/a.dart');
+
+      final revContent = await git.fileContentAt(
+        '/repo',
+        'lib/a.dart',
+        revision: 'abc1234~1',
+      );
+      expect(revContent, 'content for abc1234~1:lib/a.dart');
+
+      await git.applyHunkPatch(
+        '/repo',
+        '--- a/lib/a.dart\n+++ b/lib/a.dart\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+        cached: true,
+      );
+      expect(calls.last.take(3), ['apply', '--unidiff-zero', '--cached']);
+
+      await git.applyHunkPatch(
+        '/repo',
+        '--- a/lib/a.dart\n+++ b/lib/a.dart\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+        cached: true,
+        reverse: true,
+      );
+      expect(
+        calls.last.take(4),
+        ['apply', '--unidiff-zero', '--cached', '--reverse'],
+      );
     });
   });
 }

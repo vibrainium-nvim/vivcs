@@ -120,6 +120,9 @@ class RenderedTree {
 }
 
 class SidebarTreeState {
+  static const String chevronCollapsed = '';
+  static const String chevronExpanded = '';
+
   final Set<SectionKind> collapsedSections = {};
   final Set<String> collapsedDirs = {};
   final Set<String> expandedCommits = {};
@@ -188,19 +191,19 @@ class SidebarTreeState {
 
     // 1. Top Repository Dropdown Header
     if (activeRepo == null) {
-      final header = ' Repo: [No repository found ▾]';
+      final header = ' [No repository found $chevronExpanded]';
       addLine(
         header,
         RepoHeaderNode(repo: null, repoCount: totalRepos),
-        [(0, _byteLen(header), 'ViffRepoHeader')],
+        [(0, _byteLen(header), 'VivcsRepoHeader')],
       );
     } else {
       final label =
-          ' Repo: [${activeRepo.name} (${activeRepo.vcs.name} • ${activeRepo.head}) ▾]';
+          ' [${activeRepo.name} (${activeRepo.vcs.name} • ${activeRepo.head}) $chevronExpanded]';
       addLine(
         label,
         RepoHeaderNode(repo: activeRepo, repoCount: totalRepos),
-        [(0, _byteLen(label), 'ViffRepoHeader')],
+        [(0, _byteLen(label), 'VivcsRepoHeader')],
       );
     }
 
@@ -208,12 +211,12 @@ class SidebarTreeState {
     addLine(
       divider,
       const DividerNode(),
-      [(0, _byteLen(divider), 'ViffDivider')],
+      [(0, _byteLen(divider), 'VivcsDivider')],
     );
 
     if (activeRepo == null) {
       const hint = '  Press R to rescan workspace';
-      addLine(hint, const EmptyHintNode(hint), [(0, _byteLen(hint), 'ViffMuted')]);
+      addLine(hint, const EmptyHintNode(hint), [(0, _byteLen(hint), 'VivcsMuted')]);
       return RenderedTree(lines: lines, nodes: nodes, highlights: highlights);
     }
 
@@ -235,7 +238,7 @@ class SidebarTreeState {
 
     // 4. Commits Section
     final commitsExpanded = isSectionExpanded(SectionKind.commits);
-    final commitsChevron = commitsExpanded ? '▾' : '▸';
+    final commitsChevron = commitsExpanded ? chevronExpanded : chevronCollapsed;
     final commitsHeader = '$commitsChevron ${SectionKind.commits.label} (${commits.length})';
     addLine(
       commitsHeader,
@@ -244,22 +247,22 @@ class SidebarTreeState {
         count: commits.length,
         expanded: commitsExpanded,
       ),
-      [(0, _byteLen(commitsHeader), 'ViffSectionHeader')],
+      [(0, _byteLen(commitsHeader), 'VivcsSectionHeader')],
     );
 
     if (commitsExpanded) {
       if (commits.isEmpty) {
-        const emptyText = '  (no commits)';
+        const emptyText = '(no commits)';
         addLine(
           emptyText,
           const EmptyHintNode(emptyText),
-          [(0, _byteLen(emptyText), 'ViffMuted')],
+          [(0, _byteLen(emptyText), 'VivcsMuted')],
         );
       } else {
         for (final commit in commits) {
           final isExp = isCommitExpanded(commit.id);
-          final chevron = isExp ? '▾' : '▸';
-          final prefix = '  $chevron ';
+          final chevron = isExp ? chevronExpanded : chevronCollapsed;
+          final prefix = '$chevron ';
           final shortId = commit.shortId;
           final subject = ' ${commit.message}';
           final meta = ' (${commit.author}, ${commit.date})';
@@ -274,23 +277,23 @@ class SidebarTreeState {
             lineText,
             CommitNode(commit: commit, expanded: isExp),
             [
-              (pBytes, pBytes + idBytes, 'ViffCommitHash'),
-              (pBytes + idBytes + subjBytes, pBytes + idBytes + subjBytes + metaBytes, 'ViffMuted'),
+              (pBytes, pBytes + idBytes, 'VivcsCommitHash'),
+              (pBytes + idBytes + subjBytes, pBytes + idBytes + subjBytes + metaBytes, 'VivcsMuted'),
             ],
           );
 
           if (isExp) {
             final changedFiles = commitFilesCache[commit.id] ?? const [];
             if (changedFiles.isEmpty) {
-              const noFiles = '      (no files)';
+              const noFiles = '    (no files)';
               addLine(
                 noFiles,
                 const EmptyHintNode(noFiles),
-                [(0, _byteLen(noFiles), 'ViffMuted')],
+                [(0, _byteLen(noFiles), 'VivcsMuted')],
               );
             } else {
               for (final f in changedFiles) {
-                final indent = '      ';
+                const indent = '    ';
                 final code = f.status.code;
                 final pathPart = ' ${f.path}';
                 final full = '$indent$code$pathPart';
@@ -319,22 +322,22 @@ class SidebarTreeState {
     required void Function(String, TreeNode, [List<(int, int, String)>]) addLine,
   }) {
     final expanded = isSectionExpanded(kind);
-    final chevron = expanded ? '▾' : '▸';
+    final chevron = expanded ? chevronExpanded : chevronCollapsed;
     final header = '$chevron ${kind.label} (${files.length})';
     addLine(
       header,
       SectionNode(kind: kind, count: files.length, expanded: expanded),
-      [(0, _byteLen(header), 'ViffSectionHeader')],
+      [(0, _byteLen(header), 'VivcsSectionHeader')],
     );
 
     if (!expanded) return;
 
     if (files.isEmpty) {
-      const emptyText = '  (clean)';
+      const emptyText = '(clean)';
       addLine(
         emptyText,
         const EmptyHintNode(emptyText),
-        [(0, _byteLen(emptyText), 'ViffMuted')],
+        [(0, _byteLen(emptyText), 'VivcsMuted')],
       );
       return;
     }
@@ -367,7 +370,7 @@ class SidebarTreeState {
       for (final subDir in dirEntries) {
         final isExp = isDirExpanded(kind, subDir.path);
         final indent = '  ' * depth;
-        final dirChevron = isExp ? '▾' : '▸';
+        final dirChevron = isExp ? chevronExpanded : chevronCollapsed;
         final lineText = '$indent$dirChevron ${subDir.name}/';
         addLine(
           lineText,
@@ -379,7 +382,7 @@ class SidebarTreeState {
             expanded: isExp,
             filePaths: subDir.allFilePaths,
           ),
-          [(0, _byteLen(lineText), 'ViffDirectory')],
+          [(0, _byteLen(lineText), 'VivcsDirectory')],
         );
         if (isExp) {
           renderTrie(subDir, depth + 1);
@@ -409,17 +412,17 @@ class SidebarTreeState {
       }
     }
 
-    renderTrie(root, 1);
+    renderTrie(root, 0);
   }
 
   static String statusHighlightGroup(FileStatus status) {
     return switch (status) {
-      FileStatus.modified => 'ViffStatusModified',
-      FileStatus.added => 'ViffStatusAdded',
-      FileStatus.deleted => 'ViffStatusDeleted',
-      FileStatus.renamed => 'ViffStatusRenamed',
-      FileStatus.untracked => 'ViffStatusUntracked',
-      FileStatus.conflicted => 'ViffStatusConflicted',
+      FileStatus.modified => 'VivcsStatusModified',
+      FileStatus.added => 'VivcsStatusAdded',
+      FileStatus.deleted => 'VivcsStatusDeleted',
+      FileStatus.renamed => 'VivcsStatusRenamed',
+      FileStatus.untracked => 'VivcsStatusUntracked',
+      FileStatus.conflicted => 'VivcsStatusConflicted',
     };
   }
 
