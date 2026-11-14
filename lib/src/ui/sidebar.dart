@@ -11,7 +11,11 @@ import 'tree.dart';
 class VivcsSidebar {
   final Nvim nvim;
   final List<Vcs> vcsList;
-  final int sidebarWidth;
+  int _sidebarWidth;
+  int get sidebarWidth => _sidebarWidth;
+  set sidebarWidth(int value) {
+    if (value > 0) _sidebarWidth = value;
+  }
   final Map<String, String> extraKeymaps;
   late final ViffController viff;
 
@@ -63,11 +67,11 @@ class VivcsSidebar {
   VivcsSidebar({
     required this.nvim,
     required this.vcsList,
-    this.sidebarWidth = 38,
+    int sidebarWidth = 38,
     this.extraKeymaps = const {},
     ViffController? viff,
     bool bindRpc = true,
-  }) {
+  }) : _sidebarWidth = sidebarWidth {
     this.viff = viff ?? ViffController(nvim: nvim);
     if (bindRpc) {
       nvim.rpc.onRequest = _handleRpc;
@@ -415,6 +419,12 @@ class VivcsSidebar {
     final resolvedMouse = mousePos ?? await nvim.getMousePos();
     final maxLine = (_rendered?.nodes.length ?? 1).clamp(1, 999999);
     if (resolvedMouse != null) {
+      if (resolvedMouse.winId == win &&
+          resolvedMouse.line == 0 &&
+          resolvedMouse.column == 0) {
+        // Click on the window vertical separator border or statusline; ignore
+        return null;
+      }
       if (resolvedMouse.winId == win &&
           (resolvedMouse.line >= 1 || resolvedMouse.winRow >= 1)) {
         final targetLine = resolvedMouse.line >= 1
@@ -1204,6 +1214,8 @@ set_bold_from('VivcsSectionHeader', 'Title')
     await nvim.winSetOption(win, 'statuscolumn', '');
     await nvim.winSetOption(win, 'wrap', false);
     await nvim.winSetOption(win, 'cursorline', true);
+    await nvim.winSetOption(win, 'scrolloff', 0);
+    await nvim.winSetOption(win, 'sidescrolloff', 0);
     await nvim.winSetOption(win, 'winfixwidth', true);
   }
 

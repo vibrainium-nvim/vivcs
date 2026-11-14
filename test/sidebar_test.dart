@@ -261,6 +261,8 @@ void main() {
       expect(server.winOptions[100]!['signcolumn'], 'no');
       expect(server.winOptions[100]!['foldcolumn'], '0');
       expect(server.winOptions[100]!['statuscolumn'], '');
+      expect(server.winOptions[100]!['scrolloff'], 0);
+      expect(server.winOptions[100]!['sidescrolloff'], 0);
 
       // Verify Git repo shows Staged section and section headers are bolded
       final gitLines = server.bufLines[1]!;
